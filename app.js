@@ -1,391 +1,419 @@
-(function () {
-  const state = {
-    page: 'executive',
-    raw: {},
-    filtered: {},
-    search: '',
-    workbookFile: null,
-    source: 'Snapshot data',
-    charts: [],
-  };
-
-  const pages = [
-    ['executive', 'Executive Summary', 'layout-dashboard'],
-    ['safety', 'Safety', 'shield-alert'],
-    ['audit', 'Audit & Inspection', 'clipboard-check'],
-    ['capa', 'CAPA Center', 'clipboard-list'],
-    ['environment', 'Environment', 'leaf'],
-    ['project', 'Project Improvement', 'rocket'],
-    ['permit', 'Permit To Work', 'file-check'],
-    ['analytics', 'Analytics & Trends', 'chart-line'],
-  ];
-
-  const sheetMap = {
-    safety: 'MASTER_SAFETY',
-    finding: 'MASTER_FINDING',
-    capa: 'MASTER_CAPA',
-    environment: 'MASTER_ENVIRONMENT',
-    project: 'MASTER_PROJECT',
-    manhours: 'MASTER_MANHOURS',
-    fiveR: 'MASTER_5R',
-    apar: 'MASTER_APAR',
-    permit: 'MASTER_PERMIT',
-    lookup: 'LOOKUP',
-  };
-
-  const monthOrder = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
-
-  const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-  const norm = (v) => String(v ?? '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-  const unique = (arr) => [...new Set(arr.filter(v => v !== undefined && v !== null && String(v).trim() !== '').map(String))].sort((a,b) => a.localeCompare(b));
-  const pick = (r, keys) => {
-    for (const k of keys) if (r && r[k] !== undefined && r[k] !== null && String(r[k]).trim() !== '') return r[k];
-    return '';
-  };
-  const asNumber = (v) => {
-    if (typeof v === 'number') return v;
-    const n = Number(String(v ?? '').replace(',', '.').replace(/[^0-9.-]/g, ''));
-    return Number.isFinite(n) ? n : 0;
-  };
-  const toDate = (v) => {
-    if (!v) return null;
-    if (v instanceof Date && !isNaN(v)) return v;
-    if (typeof v === 'number') {
-      const d = XLSX?.SSF ? XLSX.SSF.parse_date_code(v) : null;
-      if (d) return new Date(d.y, d.m - 1, d.d);
-    }
-    const d = new Date(v);
-    return isNaN(d) ? null : d;
-  };
-  const fmtDate = (v) => {
-    const d = toDate(v);
-    return d ? d.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
-  };
-  const getDate = (r) => toDate(pick(r, ['Tanggal', 'Tanggal Audit', 'Issue Date', 'Start Date', 'Expired Date', 'Due Date', 'Target Finish']));
-  const getYear = (r) => String(pick(r, ['Tahun']) || getDate(r)?.getFullYear() || '');
-  const getMonth = (r) => String(pick(r, ['Bulan']) || (getDate(r) ? monthOrder[getDate(r).getMonth()] : ''));
-  const getDepartment = (r) => pick(r, ['Department', 'Departemen']);
-  const getArea = (r) => pick(r, ['Area', 'Location']);
-  const getPIC = (r) => pick(r, ['PIC', 'Auditor', 'Inspector', 'Approver']);
-  const getStatus = (r) => pick(r, ['Status', 'Progress', 'Condition']);
-  const getPriority = (r) => pick(r, ['Priority', 'Severity', 'Risk Level']);
-  const rowText = (r) => norm(Object.values(r).join(' '));
-
-  function getSeedModel() {
+window.HSE = window.HSE || {};
+HSE.app = {
+  async init() {
+    this.loadSchedules();
+    HSE.state.search = localStorage.getItem('hseLastSearch') || HSE.state.search || '';
+    HSE.data.set(this.initialModel(), HSE.workbookSeed ? 'HSE_Dashboard_Database.xlsx (Synced)' : 'No workbook loaded');
+    this.renderNav();
+    this.bind();
+    this.populateFilters();
+    this.tickClock();
+    setInterval(() => this.tickClock(), 1000);
+    this.render();
+    await this.loadPublishedWorkbook();
+  },
+  initialModel() {
+    return HSE.workbookSeed ? HSE.excel.parseRows(HSE.workbookSeed) : HSE.data.empty();
+  },
+  async loadPublishedWorkbook() {
+    if (!/^https?:$/.test(window.location.protocol)) return;
     try {
-      const el = document.getElementById('hseWorkbookSeed');
-      if (!el?.textContent?.trim()) return {};
-      return JSON.parse(el.textContent);
-    } catch (e) {
-      console.warn('Seed data tidak terbaca:', e);
-      return {};
-    }
-  }
-
-  function normalizeModel(model) {
-    const out = {};
-    Object.entries(sheetMap).forEach(([key, sheet]) => {
-      const rows = model[sheet] || model[sheet.toLowerCase()] || [];
-      out[key] = Array.isArray(rows) ? rows : [];
-    });
-    return out;
-  }
-
-  function rowCount(model) {
-    return Object.values(model || {}).reduce((t, rows) => t + (Array.isArray(rows) ? rows.length : 0), 0);
-  }
-
-  async function loadWorkbookFromUrl() {
-    try {
-      if (!window.XLSX || !/^https?:$/.test(location.protocol)) return null;
-      const res = await fetch(`./HSE_Dashboard_Database.xlsx?v=${Date.now()}`, { cache: 'no-store' });
-      if (!res.ok) throw new Error(`Excel tidak ditemukan (${res.status})`);
-      const buf = await res.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array', cellDates: true });
-      const model = {};
-      wb.SheetNames.forEach(name => {
-        model[name] = XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '', raw: false });
+      const response = await fetch(`./HSE_Dashboard_Database.xlsx?v=${Date.now()}`, { cache: 'no-store' });
+      if (!response.ok) return;
+      const file = new File([await response.arrayBuffer()], 'HSE_Dashboard_Database.xlsx', {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       });
-      if (!rowCount(normalizeModel(model))) throw new Error('Excel terbaca, tapi data master kosong.');
-      state.workbookFile = new File([buf], 'HSE_Dashboard_Database.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      state.source = 'HSE_Dashboard_Database.xlsx (Published)';
-      return model;
-    } catch (e) {
-      console.warn('Workbook publish tidak terbaca, pakai snapshot:', e);
-      return null;
+      const model = await HSE.excel.load(file);
+      const rowCount = Object.values(model).reduce((total, rows) => total + (Array.isArray(rows) ? rows.length : 0), 0);
+      if (!rowCount) return;
+      HSE.data.set(model, 'HSE_Dashboard_Database.xlsx (Published)', file);
+      this.populateFilters();
+      this.render();
+    } catch (_) {
+      // Snapshot data remains active when the published workbook is unavailable.
     }
-  }
-
-  async function loadWorkbookFile(file) {
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
-    const model = {};
-    wb.SheetNames.forEach(name => model[name] = XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '', raw: false }));
-    return model;
-  }
-
-  function bind() {
-    document.getElementById('collapseSidebar')?.addEventListener('click', () => document.getElementById('sidebar')?.classList.toggle('collapsed'));
-    document.getElementById('sideNav')?.addEventListener('click', e => {
-      const btn = e.target.closest('button[data-page]');
-      if (!btn) return;
-      state.page = btn.dataset.page;
-      render();
+  },
+  renderNav() {
+    document.getElementById('sideNav').innerHTML = HSE.config.pages.map(([id, label, icon]) => `<button data-page="${id}" class="${id === HSE.state.page ? 'active' : ''}"><i data-lucide="${icon}"></i><span class="nav-label">${label}</span></button>`).join('');
+    if (window.lucide) lucide.createIcons();
+  },
+  bind() {
+    document.getElementById('collapseSidebar').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('collapsed'));
+    document.getElementById('sideNav').addEventListener('click', (e) => { const btn = e.target.closest('button[data-page]'); if (btn) this.navigate(btn.dataset.page); });
+    const searchInput = document.getElementById('globalSearch');
+    const clearSearch = document.getElementById('clearSearch');
+    const applySearch = HSE.helpers.debounce((value) => {
+      HSE.state.search = value;
+      localStorage.setItem('hseLastSearch', value);
+      HSE.data.applyFilters();
+      this.render();
+    }, 300);
+    searchInput.value = localStorage.getItem('hseLastSearch') || HSE.state.search || '';
+    searchInput.closest('.search-box')?.classList.toggle('has-value', Boolean(searchInput.value));
+    HSE.state.search = searchInput.value;
+    searchInput.addEventListener('input', (e) => {
+      e.currentTarget.closest('.search-box')?.classList.toggle('has-value', Boolean(e.currentTarget.value));
+      applySearch(e.currentTarget.value);
     });
-    const search = document.getElementById('globalSearch');
-    const clear = document.getElementById('clearSearch');
-    search?.addEventListener('input', () => { state.search = search.value; applyFilters(); renderPage(); });
-    clear?.addEventListener('click', () => { search.value = ''; state.search = ''; applyFilters(); renderPage(); });
-    document.querySelectorAll('.filter-bar select, .filter-bar input').forEach(el => el.addEventListener('change', () => { applyFilters(); renderPage(); }));
-    document.getElementById('quickFilters')?.addEventListener('click', e => {
+    clearSearch?.addEventListener('click', (e) => {
+      e.preventDefault();
+      searchInput.value = '';
+      searchInput.closest('.search-box')?.classList.remove('has-value');
+      HSE.state.search = '';
+      localStorage.removeItem('hseLastSearch');
+      document.querySelectorAll('#quickFilters button').forEach((b) => b.classList.remove('active'));
+      HSE.data.applyFilters();
+      this.render();
+    });
+    document.getElementById('quickFilters')?.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-search]');
-      if (!btn || !search) return;
-      search.value = btn.dataset.search;
-      state.search = search.value;
-      applyFilters(); renderPage();
+      if (!btn) return;
+      document.querySelectorAll('#quickFilters button').forEach((b) => b.classList.toggle('active', b === btn));
+      searchInput.value = btn.dataset.search;
+      searchInput.closest('.search-box')?.classList.add('has-value');
+      HSE.state.search = btn.dataset.search;
+      localStorage.setItem('hseLastSearch', btn.dataset.search);
+      HSE.data.applyFilters();
+      this.render();
     });
-    document.getElementById('excelInput')?.addEventListener('change', async e => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      try {
-        setLoading(true, 'Importing workbook...');
-        const model = await loadWorkbookFile(file);
-        state.raw = normalizeModel(model);
-        state.workbookFile = file;
-        state.source = `${file.name} (Imported)`;
-        populateFilters(); applyFilters(); render();
-        toast('Import berhasil', `${rowCount(state.raw).toLocaleString('id-ID')} baris data dimuat.`);
-      } catch (err) { toast('Import gagal', err.message || 'File Excel tidak bisa dibaca.'); }
-      finally { setLoading(false); e.target.value = ''; }
+    document.querySelectorAll('.filter-bar select, .filter-bar input').forEach((el) => el.addEventListener('change', () => { HSE.data.applyFilters(); this.render(); }));
+    document.getElementById('excelInput').addEventListener('change', async (e) => this.importExcel(e.target.files?.[0]));
+    document.getElementById('importExcelButton')?.addEventListener('click', (e) => {
+      if (e.target?.id !== 'excelInput') {
+        e.preventDefault();
+        document.getElementById('excelInput').click();
+      }
     });
-    document.getElementById('importExcelButton')?.addEventListener('click', e => {
-      if (e.target?.id !== 'excelInput') document.getElementById('excelInput')?.click();
+    document.getElementById('importExcelButton')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('excelInput').click(); });
+    document.getElementById('exportPdf').addEventListener('click', () => HSE.exporter.pdf());
+    document.getElementById('exportExcel').addEventListener('click', () => this.exportChoice());
+    document.getElementById('refreshData').addEventListener('click', () => this.refreshWorkbook());
+    document.getElementById('darkMode').addEventListener('click', () => document.body.classList.toggle('dark'));
+    document.getElementById('notificationButton').addEventListener('click', () => this.openNotifications());
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        this.openCommandPalette();
+      }
     });
-    document.getElementById('refreshData')?.addEventListener('click', async () => { await refreshWorkbook(); });
-    document.getElementById('exportPdf')?.addEventListener('click', () => window.print());
-    document.getElementById('exportExcel')?.addEventListener('click', exportExcel);
-    document.getElementById('darkMode')?.addEventListener('click', () => document.body.classList.toggle('dark'));
-    document.getElementById('notificationButton')?.addEventListener('click', showNotifications);
-  }
-
-  function renderNav() {
-    const host = document.getElementById('sideNav');
-    if (!host) return;
-    host.innerHTML = pages.map(([id, label, icon]) => `<button data-page="${id}" class="${id === state.page ? 'active' : ''}"><i data-lucide="${icon}"></i><span class="nav-label">${label}</span></button>`).join('');
-    if (window.lucide) lucide.createIcons();
-  }
-
-  function setLoading(active, text) {
-    document.getElementById('loadingOverlay')?.remove();
-    if (!active) return;
-    document.getElementById('pageHost')?.insertAdjacentHTML('afterbegin', `<div id="loadingOverlay" class="card mb-3"><strong>${esc(text || 'Loading...')}</strong><div class="progress-line"><span style="width:72%"></span></div></div>`);
-  }
-  function toast(title, message) {
-    const host = document.getElementById('toastHost');
-    if (!host) return alert(`${title}\n${message}`);
-    const id = `toast-${Date.now()}`;
-    host.insertAdjacentHTML('beforeend', `<div id="${id}" class="toast show"><div class="toast-header"><strong class="me-auto">${esc(title)}</strong><button type="button" class="btn-close" onclick="this.closest('.toast').remove()"></button></div><div class="toast-body">${esc(message)}</div></div>`);
-    setTimeout(() => document.getElementById(id)?.remove(), 4500);
-  }
-
-  function populateFilters() {
-    const all = Object.values(state.raw).flat();
-    const fill = (id, values) => {
-      const el = document.getElementById(id); if (!el) return;
-      const old = el.value;
-      el.innerHTML = values.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
-      if ([...el.options].some(o => o.value === old)) el.value = old;
-    };
-    fill('filterYear', ['All', ...unique(all.map(getYear))]);
-    fill('filterMonth', ['All', ...monthOrder.filter(m => all.some(r => getMonth(r) === m))]);
-    fill('filterDepartment', ['All', ...unique(all.map(getDepartment))]);
-    fill('filterArea', ['All', ...unique(all.map(getArea))]);
-    fill('filterPic', ['All', ...unique(all.map(getPIC))]);
-    fill('filterRisk', ['All', ...unique(all.map(r => pick(r, ['Risk Level','Severity']))) ]);
-    fill('filterStatus', ['All', ...unique(all.map(getStatus))]);
-    fill('filterPriority', ['All', ...unique(all.map(getPriority))]);
-    fill('filterAuditType', ['All', ...unique(state.raw.finding.map(r => pick(r, ['Jenis Audit','Audit Type']))) ]);
-    fill('filterIncidentType', ['All', ...unique(state.raw.safety.map(r => pick(r, ['Incident Type']))) ]);
-    fill('filterPermitType', ['All', ...unique(state.raw.permit.map(r => pick(r, ['Permit Type']))) ]);
-    fill('filterWasteType', ['All', ...unique(state.raw.environment.map(r => pick(r, ['Jenis Limbah','Kategori']))) ]);
-    fill('filterProject', ['All', ...unique(state.raw.project.map(r => pick(r, ['Project Name','Project']))) ]);
-    fill('filterVendor', ['All', ...unique([...state.raw.environment, ...state.raw.permit, ...state.raw.project].map(r => pick(r, ['Vendor','Contractor']))) ]);
-  }
-
-  function getFilters() {
-    const val = id => document.getElementById(id)?.value || 'All';
-    return {
-      year: val('filterYear'), month: val('filterMonth'), date: document.getElementById('filterDate')?.value || '', department: val('filterDepartment'), area: val('filterArea'), pic: val('filterPic'), risk: val('filterRisk'), status: val('filterStatus'), priority: val('filterPriority'), auditType: val('filterAuditType'), incidentType: val('filterIncidentType'), permitType: val('filterPermitType'), wasteType: val('filterWasteType'), project: val('filterProject'), vendor: val('filterVendor')
-    };
-  }
-
-  function rowMatches(r, type, f) {
-    if (f.year !== 'All' && getYear(r) !== f.year) return false;
-    if (f.month !== 'All' && getMonth(r) !== f.month) return false;
-    if (f.date) {
-      const d = getDate(r);
-      if (!d || d.toISOString().slice(0,10) !== f.date) return false;
+  },
+  async importExcel(file) {
+    if (!file) return;
+    try {
+      this.setLoading(true, 'Importing workbook...');
+      const model = await HSE.excel.load(file);
+      const rowCount = Object.values(model).reduce((total, rows) => total + (Array.isArray(rows) ? rows.length : 0), 0);
+      if (!rowCount) throw new Error('Workbook terbaca, tetapi tidak ada data master yang dapat diproses.');
+      HSE.data.set(model, file.name, file);
+      this.populateFilters();
+      this.render();
+      this.showValidation();
+      HSE.ui.toast('Import berhasil', `${rowCount.toLocaleString('id-ID')} baris data dimuat dari ${file.name}.`);
+    } catch (error) {
+      HSE.ui.toast('Import failed', error.message || 'Excel format cannot be read.');
+    } finally {
+      this.setLoading(false);
+      const input = document.getElementById('excelInput');
+      if (input) input.value = '';
     }
-    if (f.department !== 'All' && getDepartment(r) !== f.department) return false;
-    if (f.area !== 'All' && getArea(r) !== f.area) return false;
-    if (f.pic !== 'All' && getPIC(r) !== f.pic) return false;
-    if (f.risk !== 'All' && ![pick(r,['Risk Level']), pick(r,['Severity'])].includes(f.risk)) return false;
-    if (f.status !== 'All' && getStatus(r) !== f.status) return false;
-    if (f.priority !== 'All' && getPriority(r) !== f.priority) return false;
-    if (f.auditType !== 'All' && type === 'finding' && pick(r, ['Jenis Audit','Audit Type']) !== f.auditType) return false;
-    if (f.incidentType !== 'All' && type === 'safety' && pick(r, ['Incident Type']) !== f.incidentType) return false;
-    if (f.permitType !== 'All' && type === 'permit' && pick(r, ['Permit Type']) !== f.permitType) return false;
-    if (f.wasteType !== 'All' && type === 'environment' && ![pick(r,['Jenis Limbah']), pick(r,['Kategori'])].includes(f.wasteType)) return false;
-    if (f.project !== 'All' && type === 'project' && pick(r, ['Project Name','Project']) !== f.project) return false;
-    if (f.vendor !== 'All' && ![pick(r,['Vendor']), pick(r,['Contractor'])].includes(f.vendor)) return false;
-    if (state.search && !rowText(r).includes(norm(state.search))) return false;
-    return true;
-  }
-
-  function applyFilters() {
-    const f = getFilters();
-    state.filtered = {};
-    Object.entries(state.raw).forEach(([type, rows]) => state.filtered[type] = rows.filter(r => rowMatches(r, type, f)));
-  }
-
-  function statusClass(v) {
-    const n = norm(v);
-    if (/overdue|expired|critical|delayed|open|major/.test(n)) return 'badge-soft badge-critical';
-    if (/progress|medium|pending|scheduled/.test(n)) return 'badge-soft badge-warning';
-    if (/close|closed|completed|normal|done|low/.test(n)) return 'badge-soft badge-success';
-    return 'badge-soft badge-info';
-  }
-  function kpi(label, value, meta, icon, tone='info') {
-    return `<div class="card kpi-card" data-tone="${tone}"><div class="kpi-top"><div><span class="kpi-label">${esc(label)}</span><strong class="kpi-value">${esc(value)}</strong></div><div class="kpi-icon"><i data-lucide="${icon}"></i></div></div><div class="kpi-meta"><span>${esc(meta || '')}</span></div></div>`;
-  }
-  function table(rows, cols, limit=12) {
-    if (!rows?.length) return '<div class="empty-state">Tidak ada data untuk filter saat ini.</div>';
-    const shown = rows.slice(0, limit);
-    return `<div class="table-responsive"><table class="table table-sm align-middle"><thead><tr>${cols.map(c => `<th>${esc(c[0])}</th>`).join('')}</tr></thead><tbody>${shown.map(r => `<tr>${cols.map(c => `<td>${c[2] ? c[2](pick(r, c[1])) : esc(pick(r,c[1]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>${rows.length > limit ? `<p class="text-muted small mt-2">Menampilkan ${limit} dari ${rows.length.toLocaleString('id-ID')} baris.</p>` : ''}`;
-  }
-  function chartCard(title, canvasId) {
-    return `<div class="card"><div class="section-title"><h4>${esc(title)}</h4></div><canvas id="${canvasId}" height="120"></canvas></div>`;
-  }
-  function destroyCharts() { state.charts.forEach(c => c.destroy?.()); state.charts = []; }
-  function addChart(id, config) {
-    const canvas = document.getElementById(id);
-    if (canvas && window.Chart) state.charts.push(new Chart(canvas, config));
-  }
-  function groupCount(rows, keyFn) {
-    const m = {};
-    rows.forEach(r => { const k = keyFn(r) || '-'; m[k] = (m[k] || 0) + 1; });
-    return m;
-  }
-  function byMonth(rows) { const m = Object.fromEntries(monthOrder.map(x => [x,0])); rows.forEach(r => { const mo = getMonth(r); if (mo in m) m[mo]++; }); return monthOrder.map(x => m[x]); }
-  function renderCharts() {
-    if (!window.Chart) return;
-    addChart('chartIncidentMonth', { type: 'line', data: { labels: monthOrder, datasets: [{ label: 'Incident', data: byMonth(state.filtered.safety), tension: .35 }] }, options: { responsive: true, plugins: { legend: { display: false } } } });
-    const dept = groupCount(state.filtered.finding, getDepartment);
-    addChart('chartFindingDept', { type: 'bar', data: { labels: Object.keys(dept).slice(0,10), datasets: [{ label: 'Finding', data: Object.values(dept).slice(0,10) }] }, options: { responsive: true, plugins: { legend: { display: false } } } });
-    const st = groupCount([...state.filtered.finding, ...state.filtered.capa], getStatus);
-    addChart('chartStatus', { type: 'doughnut', data: { labels: Object.keys(st), datasets: [{ data: Object.values(st) }] }, options: { responsive: true } });
-  }
-
-  function metrics() {
-    const safety = state.filtered.safety || [], finding = state.filtered.finding || [], capa = state.filtered.capa || [], apar = state.filtered.apar || [], man = state.filtered.manhours || [];
-    const open = rows => rows.filter(r => /open|progress|pending|overdue/i.test(getStatus(r))).length;
-    const totalManhours = man.reduce((s,r) => s + asNumber(pick(r,['Manhours'])), 0);
-    const lti = man.reduce((s,r) => s + asNumber(pick(r,['LTI'])), 0) || safety.filter(r => /lost time/i.test(pick(r,['Incident Type']))).length;
-    const lostDays = man.reduce((s,r) => s + asNumber(pick(r,['Lost Days'])), 0);
-    const ltifr = totalManhours ? ((lti * 1000000) / totalManhours) : 0;
-    const ltisr = totalManhours ? ((lostDays * 1000000) / totalManhours) : 0;
-    const openFind = open(finding);
-    const safetyScore = Math.max(0, Math.round(100 - Math.min(40, safety.length * 1.5) - Math.min(30, openFind / 10)));
-    return { totalIncident: safety.length, openFinding: openFind, openCapa: open(capa), expiredApar: apar.filter(r => /expired/i.test(`${getStatus(r)} ${pick(r,['Condition'])}`)).length, safetyScore, ltifr, ltisr };
-  }
-
-  function renderExecutive() {
-    const m = metrics();
-    return `<div class="page"><div class="page-head"><div><h3>Executive Summary</h3><p>${esc(state.source)} · ${rowCount(state.filtered).toLocaleString('id-ID')} baris sesuai filter</p></div></div>
-      <div class="grid kpi-grid">
-        ${kpi('Total Incident', m.totalIncident, 'Semua data safety', 'shield-alert')}
-        ${kpi('Open Finding', m.openFinding, 'Temuan belum close', 'search-check', 'warning')}
-        ${kpi('Open CAPA', m.openCapa, 'CAPA belum close', 'folder-open', 'warning')}
-        ${kpi('Expired APAR', m.expiredApar, 'Perlu follow up', 'flame', m.expiredApar ? 'critical' : 'success')}
-        ${kpi('Safety Score', m.safetyScore, 'Estimasi berbasis incident & finding', 'gauge', 'success')}
-        ${kpi('LTIFR', m.ltifr.toFixed(2), 'Per 1.000.000 jam kerja', 'activity')}
-        ${kpi('LTISR', m.ltisr.toFixed(2), 'Per 1.000.000 jam kerja', 'bar-chart-3')}
-        ${kpi('Project Active', state.filtered.project.filter(r => !/completed|closed/i.test(getStatus(r))).length, 'Project belum selesai', 'rocket')}
-      </div>
-      <div class="grid chart-grid">${chartCard('Incident per Bulan', 'chartIncidentMonth')}${chartCard('Finding per Department', 'chartFindingDept')}${chartCard('Status Finding/CAPA', 'chartStatus')}</div>
-      <div class="card mt-3"><div class="section-title"><h4>Latest Finding</h4><span>Top 10</span></div>${table(state.filtered.finding, [['ID',['Finding ID']],['Tanggal',['Tanggal']],['Department',['Department']],['Area',['Area']],['Finding',['Finding Description']],['Status',['Status'], v=>`<span class="${statusClass(v)}">${esc(v)}</span>`]], 10)}</div>
-    </div>`;
-  }
-
-  function renderRowsPage(title, subtitle, rows, cols) {
-    return `<div class="page"><div class="page-head"><div><h3>${esc(title)}</h3><p>${esc(subtitle)} · ${rows.length.toLocaleString('id-ID')} baris</p></div></div><div class="card">${table(rows, cols, 60)}</div></div>`;
-  }
-
-  function renderPage() {
-    destroyCharts();
-    const h = document.getElementById('pageHost'); if (!h) return;
-    const commonStatus = v => `<span class="${statusClass(v)}">${esc(v)}</span>`;
-    const page = state.page;
-    if (page === 'executive') h.innerHTML = renderExecutive();
-    else if (page === 'safety') h.innerHTML = renderRowsPage('Safety', 'Incident, FAC, MTC, LTI, dan pelaporan kecelakaan', state.filtered.safety, [['Incident ID',['Incident ID']],['Tanggal',['Tanggal'],fmtDate],['Department',['Department']],['Area',['Area']],['Incident Type',['Incident Type']],['Severity',['Severity'], commonStatus],['Description',['Description']],['Lost Days',['Lost Days']],['Status',['Status'], commonStatus]]);
-    else if (page === 'audit') h.innerHTML = renderRowsPage('Audit & Inspection', 'Master finding dan temuan audit', state.filtered.finding, [['Finding ID',['Finding ID']],['Tanggal',['Tanggal'],fmtDate],['Bulan',['Bulan']],['Department',['Department']],['Area',['Area']],['Jenis Audit',['Jenis Audit']],['Risk',['Risk Level'], commonStatus],['Finding',['Finding Description']],['PIC',['PIC']],['Due Date',['Due Date'],fmtDate],['Status',['Status'], commonStatus]]);
-    else if (page === 'capa') h.innerHTML = renderRowsPage('CAPA Center', 'Corrective dan preventive action', state.filtered.capa, [['CAPA ID',['CAPA ID']],['Finding ID',['Finding ID']],['Tanggal',['Tanggal'],fmtDate],['Department',['Department']],['Area',['Area']],['Finding',['Finding']],['PIC',['PIC']],['Due Date',['Due Date'],fmtDate],['Progress',['Progress'], commonStatus],['Status',['Status'], commonStatus]]);
-    else if (page === 'environment') h.innerHTML = renderRowsPage('Environment', 'Limbah, manifest, vendor, dan parameter lingkungan', state.filtered.environment, [['Record ID',['Record ID']],['Tanggal',['Tanggal'],fmtDate],['Department',['Department']],['Area',['Area']],['Kategori',['Kategori']],['Jenis Limbah',['Jenis Limbah']],['Nilai',['Nilai']],['Berat',['Berat']],['Vendor',['Vendor']],['Manifest',['Nomor Manifest']],['Status',['Status'], commonStatus]]);
-    else if (page === 'project') h.innerHTML = renderRowsPage('Project Improvement', 'Monitoring project HSE', state.filtered.project, [['Project ID',['Project ID']],['Tanggal',['Tanggal'],fmtDate],['Project Name',['Project Name']],['Department',['Department']],['Area',['Area']],['PIC',['PIC']],['Target Finish',['Target Finish'],fmtDate],['Progress',['Progress']],['Priority',['Priority'], commonStatus],['Status',['Status'], commonStatus]]);
-    else if (page === 'permit') h.innerHTML = renderRowsPage('Permit To Work', 'Monitoring PTW dan pekerjaan kontraktor', state.filtered.permit, [['Permit ID',['Permit ID']],['Permit Number',['Permit Number']],['Tanggal',['Tanggal'],fmtDate],['Permit Type',['Permit Type']],['Department',['Department']],['Area',['Area']],['Contractor',['Contractor']],['PIC',['PIC']],['Issue Date',['Issue Date'],fmtDate],['Close Date',['Close Date'],fmtDate],['Status',['Status'], commonStatus],['Priority',['Priority'], commonStatus]]);
-    else h.innerHTML = `<div class="page"><div class="page-head"><div><h3>Analytics & Trends</h3><p>Ringkasan tren berdasarkan data terfilter</p></div></div><div class="grid chart-grid">${chartCard('Incident per Bulan','chartIncidentMonth')}${chartCard('Finding per Department','chartFindingDept')}${chartCard('Status Finding/CAPA','chartStatus')}</div></div>`;
-    if (window.lucide) lucide.createIcons();
-    renderCharts();
-    updateNotifications();
-  }
-
-  function render() { renderNav(); updateClock(); renderPage(); }
-  function updateClock() {
-    const now = new Date();
-    const dc = document.getElementById('digitalClock'); if (dc) dc.textContent = now.toLocaleTimeString('id-ID');
-    const td = document.getElementById('todayDate'); if (td) td.textContent = now.toLocaleDateString('id-ID', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
-  }
-  function updateNotifications() {
-    const m = metrics();
-    const n = m.openFinding + m.openCapa + m.expiredApar;
-    const el = document.getElementById('notificationCount'); if (el) el.textContent = n;
-  }
-  function showNotifications() {
-    const m = metrics();
-    const items = [`Open Finding: ${m.openFinding}`, `Open CAPA: ${m.openCapa}`, `Expired APAR: ${m.expiredApar}`, `Total Incident: ${m.totalIncident}`];
-    const modal = document.getElementById('detailModal');
-    document.getElementById('detailModalTitle').textContent = 'Notification Center';
-    document.getElementById('detailModalBody').innerHTML = `<div class="activity-list">${items.map((x,i)=>`<div class="activity-item"><strong>${i+1}</strong><div><strong>${esc(x)}</strong><span>Data sesuai filter saat ini</span></div></div>`).join('')}</div>`;
-    if (window.bootstrap && modal) bootstrap.Modal.getOrCreateInstance(modal).show();
-  }
-  async function refreshWorkbook() {
-    setLoading(true, 'Refreshing workbook...');
-    const model = await loadWorkbookFromUrl();
-    if (model) { state.raw = normalizeModel(model); populateFilters(); applyFilters(); render(); toast('Refresh berhasil', 'Data published workbook berhasil dibaca ulang.'); }
-    else { applyFilters(); render(); toast('Refresh selesai', 'Snapshot data tetap aktif.'); }
-    setLoading(false);
-  }
-  function exportExcel() {
-    if (!window.XLSX) return toast('Export gagal', 'Library XLSX tidak terbaca.');
-    const wb = XLSX.utils.book_new();
-    Object.entries(sheetMap).forEach(([key, sheet]) => {
-      const ws = XLSX.utils.json_to_sheet(state.filtered[key] || []);
-      XLSX.utils.book_append_sheet(wb, ws, sheet.slice(0,31));
+  },
+  async refreshWorkbook() {
+    if (!HSE.state.workbookFile) {
+      HSE.data.applyFilters();
+      this.render();
+      HSE.ui.toast('Refresh berhasil', 'Dashboard diperbarui dari cache saat ini.');
+      return;
+    }
+    try {
+      const activeFilters = HSE.data.getFilters();
+      this.setLoading(true, 'Refreshing workbook...');
+      const model = await HSE.excel.load(HSE.state.workbookFile);
+      HSE.data.set(model, HSE.state.workbookFile.name, HSE.state.workbookFile);
+      this.populateFilters();
+      this.restoreFilterValues(activeFilters);
+      this.render();
+      this.showValidation();
+      HSE.ui.toast('Refresh berhasil', 'Workbook berhasil dibaca ulang tanpa reload browser.');
+    } catch (error) {
+      HSE.ui.toast('Refresh gagal', error.message || 'Workbook tidak dapat dibaca ulang.');
+    } finally {
+      this.setLoading(false);
+    }
+  },
+  restoreFilterValues(filters) {
+    const map = { year: 'filterYear', month: 'filterMonth', date: 'filterDate', department: 'filterDepartment', area: 'filterArea', pic: 'filterPic', risk: 'filterRisk', status: 'filterStatus', priority: 'filterPriority', auditType: 'filterAuditType', incidentType: 'filterIncidentType', permitType: 'filterPermitType', wasteCategory: 'filterWasteType', project: 'filterProject', vendor: 'filterVendor' };
+    Object.entries(map).forEach(([key, id]) => {
+      const el = document.getElementById(id);
+      if (el && filters[key] !== undefined && [...(el.options || [])].some((o) => o.value === filters[key])) el.value = filters[key];
+      if (el?.type === 'date') el.value = filters[key] || '';
     });
-    XLSX.writeFile(wb, 'hse-dashboard-filtered-export.xlsx');
-  }
-
-  async function init() {
-    bind();
-    const seed = normalizeModel(getSeedModel());
-    state.raw = seed;
-    const published = await loadWorkbookFromUrl();
-    if (published) state.raw = normalizeModel(published);
-    populateFilters();
-    applyFilters();
-    render();
-    setInterval(updateClock, 1000);
-  }
-
-  document.addEventListener('DOMContentLoaded', init);
-})();
+  },
+  showValidation() {
+    const v = HSE.state.validation || { missingSheets: [], missingColumns: [], rowErrors: [] };
+    const details = [...v.missingSheets.map((x) => `Sheet: ${x}`), ...v.missingColumns, ...(v.rowErrors || [])];
+    HSE.state.validation.summary = details;
+    return details.length;
+  },
+  exportChoice() {
+    const pick = window.prompt('Export: workbook / schedule / both', 'workbook');
+    if (pick === 'schedule') HSE.exporter.schedules();
+    else if (pick === 'both') HSE.exporter.combined();
+    else HSE.exporter.xlsx('hse-command-center-export.xlsx');
+    HSE.ui.toast('Export berhasil', 'Data diekspor sesuai filter saat ini.');
+  },
+  setLoading(active, text = 'Loading...') {
+    HSE.state.loading = active;
+    const host = document.getElementById('pageHost');
+    if (active && host) host.insertAdjacentHTML('afterbegin', `<div id="loadingOverlay" class="card skeleton mb-3"><strong>${HSE.helpers.esc(text)}</strong><div class="progress-line"><span style="width:72%"></span></div></div>`);
+    if (!active) document.getElementById('loadingOverlay')?.remove();
+  },
+  openCommandPalette() {
+    const commands = [
+      ['Cari Incident', () => this.quickSearch('Incident')],
+      ['Cari Finding', () => this.quickSearch('Finding')],
+      ['Cari CAPA', () => this.quickSearch('CAPA')],
+      ['Cari Permit', () => this.quickSearch('Permit')],
+      ['Cari Project', () => this.quickSearch('Project')],
+      ['Cari Department', () => this.quickSearch('Department')],
+      ...HSE.config.pages.map(([id, label]) => [`Buka ${label}`, () => this.navigate(id)]),
+      ['Import Workbook', () => document.getElementById('excelInput').click()],
+      ['Export PDF', () => HSE.exporter.pdf()],
+      ['Export Excel', () => HSE.exporter.xlsx()],
+      ['Tambah Schedule', () => this.showCalendarModal(new Date(), [])],
+    ];
+    document.getElementById('detailModalTitle').textContent = 'Command Palette';
+    document.getElementById('detailModalBody').innerHTML = `<div class="command-palette"><input id="commandSearch" class="form-control mb-3" autofocus aria-label="Command search"><div id="commandList" class="activity-list">${commands.map(([label], i) => `<button class="activity-item command-item" data-index="${i}"><strong>⌘K</strong><div><strong>${label}</strong><span>Execute command</span></div><span class="badge-soft badge-info">Enter</span></button>`).join('')}</div></div>`;
+    const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('detailModal'));
+    modal.show();
+    const render = () => {
+      const q = HSE.helpers.norm(document.getElementById('commandSearch').value);
+      document.querySelectorAll('.command-item').forEach((btn) => {
+        btn.style.display = HSE.helpers.norm(btn.innerText).includes(q) ? '' : 'none';
+      });
+    };
+    setTimeout(() => document.getElementById('commandSearch')?.focus(), 180);
+    document.getElementById('commandSearch').addEventListener('input', render);
+    document.querySelectorAll('.command-item').forEach((btn) => btn.addEventListener('click', () => {
+      const fn = commands[Number(btn.dataset.index)][1];
+      modal.hide();
+      fn();
+    }));
+  },
+  quickSearch(type) {
+    const input = document.getElementById('globalSearch');
+    input.value = type;
+    HSE.state.search = type;
+    HSE.data.applyFilters();
+    this.render();
+  },
+  populateFilters() {
+    const all = Object.values(HSE.state.raw).flat(), h = HSE.helpers;
+    const fill = (id, values) => { document.getElementById(id).innerHTML = values.map((v) => `<option>${h.esc(v)}</option>`).join(''); };
+    fill('filterYear', ['All', '2026', ...h.unique(all.map((r) => r.date?.getFullYear()).filter(Boolean))]);
+    fill('filterMonth', ['All', ...HSE.config.months]);
+    fill('filterDepartment', ['All', ...h.unique([...HSE.config.departments, ...all.map((r) => r.department)])]);
+    fill('filterArea', ['All', ...h.unique([...HSE.config.areas, ...all.map((r) => r.area)])]);
+    fill('filterPic', ['All', ...h.unique(all.map((r) => r.pic))]);
+    fill('filterRisk', ['All', ...HSE.config.risks]);
+    fill('filterStatus', ['All', ...h.unique([...HSE.config.statuses, ...all.map((r) => r.status)])]);
+    fill('filterPriority', ['All', ...HSE.config.priorities]);
+    fill('filterAuditType', ['All', ...HSE.config.auditTypes]);
+    fill('filterIncidentType', ['All', ...HSE.config.incidentTypes]);
+    fill('filterPermitType', ['All', ...HSE.config.permitTypes]);
+    fill('filterWasteType', ['All', ...HSE.config.wasteCategories]);
+    fill('filterProject', ['All', ...h.unique(HSE.state.raw.project.map((r) => r.name))]);
+    fill('filterVendor', ['All', ...h.unique([...HSE.state.raw.environment.map((r) => r.vendor), ...HSE.state.raw.permit.map((r) => r.vendor), ...HSE.state.raw.project.map((r) => r.vendor)])]);
+  },
+  render() {
+    HSE.data.applyFilters();
+    const reminders = this.scheduleReminders();
+    HSE.state.notifications = this.buildNotifications(reminders);
+    document.getElementById('notificationCount').textContent = HSE.state.notifications.length;
+    this.renderNav();
+    HSE.pages.render();
+    this.drawSparks();
+  },
+  navigate(page) { HSE.state.page = page; this.render(); },
+  openDetail(id) { this.showDetail({ Chart: id, Page: HSE.state.page, Filter: HSE.data.getFilters() }); },
+  showDetail(data) {
+    document.getElementById('detailModalTitle').textContent = 'Detail';
+    document.getElementById('detailModalBody').innerHTML = `<pre class="mb-0">${HSE.helpers.esc(JSON.stringify(data, null, 2))}</pre>`;
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('detailModal')).show();
+  },
+  buildNotifications(reminders = []) {
+    const d = HSE.state.filtered;
+    const findings = [...d.finding, ...d.audit];
+    return [
+      ...findings.filter((r) => r.status === 'Overdue').slice(0, 5).map((r) => ({ title: `Finding Overdue: ${r.id}`, page: 'audit', tone: 'Critical' })),
+      ...d.capa.filter((r) => r.status === 'Overdue').slice(0, 5).map((r) => ({ title: `CAPA Overdue: ${r.id}`, page: 'capa', tone: 'Critical' })),
+      ...d.apar.filter((r) => /expired/i.test(`${r.status} ${r.condition}`)).slice(0, 5).map((r) => ({ title: `APAR Expired: ${r.id || r.aparNumber}`, page: 'analytics', tone: 'Critical' })),
+      ...d.permit.filter((r) => r.status === 'Expired').slice(0, 5).map((r) => ({ title: `Permit Expired: ${r.id}`, page: 'permit', tone: 'Critical' })),
+      ...d.project.filter((r) => r.status === 'Delayed').slice(0, 5).map((r) => ({ title: `Project Delayed: ${r.id}`, page: 'project', tone: 'High' })),
+      ...d.safety.filter((r) => ['Critical', 'Fatality', 'Lost Time Injury'].includes(r.severity) || ['Fatality', 'Lost Time Injury'].includes(r.incidentType)).slice(0, 5).map((r) => ({ title: `Critical Incident: ${r.id}`, page: 'safety', tone: 'Critical' })),
+      ...reminders.map((s) => {
+        const today = HSE.helpers.fmtDate(new Date());
+        const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+        const label = s.date === today ? 'Schedule Hari Ini' : HSE.helpers.fmtDate(tomorrow) === s.date ? 'Schedule Besok' : 'Schedule';
+        return { title: `${label}: ${s.startTime || '-'} - ${s.title}`, page: 'executive', tone: s.priority || 'Medium' };
+      }),
+    ];
+  },
+  openNotifications() {
+    const items = HSE.state.notifications;
+    document.getElementById('detailModalTitle').textContent = 'Notification Center';
+    document.getElementById('detailModalBody').innerHTML = items.length ? `<div class="activity-list">${items.map((n, i) => `<button class="activity-item notification-item" data-page="${n.page}"><strong>${i + 1}</strong><div><strong>${HSE.helpers.esc(n.title)}</strong><span>${HSE.helpers.esc(n.page)}</span></div><span class="badge-soft ${HSE.ui.badge(n.tone)}">${HSE.helpers.esc(n.tone)}</span></button>`).join('')}</div>` : '<div class="empty-state">Tidak ada notifikasi.</div>';
+    document.querySelectorAll('.notification-item').forEach((el) => el.addEventListener('click', () => { bootstrap.Modal.getOrCreateInstance(document.getElementById('detailModal')).hide(); this.navigate(el.dataset.page); }));
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('detailModal')).show();
+  },
+  showCalendarModal(date, activities = []) {
+    const selected = date || new Date();
+    document.getElementById('detailModalTitle').textContent = 'HSE Calendar';
+    document.getElementById('detailModalBody').innerHTML = `
+      <ul class="nav nav-tabs" role="tablist">
+        <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#calActivities" type="button">Activities</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#calAdd" type="button">Add Schedule</button></li>
+      </ul>
+      <div class="tab-content pt-3">
+        <div id="calActivities" class="tab-pane fade show active">${this.scheduleList(activities, selected)}</div>
+        <div id="calAdd" class="tab-pane fade">${this.scheduleForm({ date: HSE.helpers.fmtDate(selected) })}</div>
+      </div>`;
+    this.bindScheduleModal();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('detailModal')).show();
+  },
+  scheduleList(items, date) {
+    if (!items.length) return '<div class="empty-state">Tidak ada aktivitas hari ini.</div>';
+    return `<div class="activity-list">${items.sort((a,b) => String(a.startTime || a.time).localeCompare(String(b.startTime || b.time))).map((a) => `<div class="activity-item"><strong>${a.startTime || a.time || '-'}</strong><div><strong>${HSE.helpers.esc(a.title || a.name)}</strong><span>${HSE.helpers.esc(a.department || '-')} • ${HSE.helpers.esc(a.area || '-')} • ${HSE.helpers.esc(a.pic || '-')}</span></div><span class="badge-soft ${HSE.ui.badge(a.priority || a.status)}">${HSE.helpers.esc(a.status || '-')}</span>${a.manual ? `<div class="schedule-actions full"><button class="action-button schedule-edit" data-id="${a.id}">Edit</button><button class="action-button schedule-duplicate" data-id="${a.id}">Duplicate</button><button class="action-button schedule-copy" data-id="${a.id}">Copy</button><button class="action-button schedule-complete" data-id="${a.id}">Completed</button><button class="action-button schedule-cancel" data-id="${a.id}">Cancelled</button><button class="action-button schedule-delete" data-id="${a.id}">Delete</button></div>` : ''}</div>`).join('')}</div>`;
+  },
+  scheduleForm(schedule = {}) {
+    const c = ['Audit', 'Inspection', '5R Audit', 'APD Inspection', 'APAR Inspection', 'Safety Patrol', 'Safety Talk', 'Meeting', 'Project', 'Maintenance', 'Vendor Visit', 'Calibration', 'Emergency Drill', 'Training', 'Campaign', 'Other'];
+    return `<form id="scheduleForm" class="schedule-form">
+      <input type="hidden" name="id" value="${schedule.id || ''}">
+      <label>Judul<input required name="title" value="${HSE.helpers.esc(schedule.title || '')}"></label>
+      <label>Kategori<select name="category">${c.map((x) => `<option ${schedule.category === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+      <label>Tanggal<input required type="date" name="date" value="${schedule.date || HSE.helpers.fmtDate(new Date())}"></label>
+      <label>Jam Mulai<input required type="time" name="startTime" value="${schedule.startTime || '08:00'}"></label>
+      <label>Jam Selesai<input required type="time" name="endTime" value="${schedule.endTime || '09:00'}"></label>
+      <label>Department<select name="department">${HSE.config.departments.map((x) => `<option ${schedule.department === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+      <label>Area<select name="area">${HSE.config.areas.map((x) => `<option ${schedule.area === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+      <label>PIC<input name="pic" value="${HSE.helpers.esc(schedule.pic || '')}"></label>
+      <label>Prioritas<select name="priority">${['Low', 'Medium', 'High', 'Critical'].map((x) => `<option ${schedule.priority === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+      <label>Status<select name="status">${['Scheduled', 'In Progress', 'Completed', 'Cancelled'].map((x) => `<option ${schedule.status === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+      <label>Reminder<input name="reminder" value="${HSE.helpers.esc(schedule.reminder || '')}"></label>
+      <label>Lampiran (Opsional)<input name="attachment" value="${HSE.helpers.esc(schedule.attachment || '')}"></label>
+      <label class="full">Deskripsi<textarea name="description">${HSE.helpers.esc(schedule.description || '')}</textarea></label>
+      <div class="schedule-actions full"><button class="action-button" type="submit">Save Schedule</button></div>
+    </form>`;
+  },
+  bindScheduleModal() {
+    document.getElementById('scheduleForm')?.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const data = Object.fromEntries(new FormData(e.target).entries());
+      this.saveSchedule(data);
+      bootstrap.Modal.getOrCreateInstance(document.getElementById('detailModal')).hide();
+    });
+    document.querySelectorAll('.schedule-delete').forEach((b) => b.addEventListener('click', () => this.deleteSchedule(b.dataset.id)));
+    document.querySelectorAll('.schedule-complete').forEach((b) => b.addEventListener('click', () => this.updateScheduleStatus(b.dataset.id, 'Completed')));
+    document.querySelectorAll('.schedule-cancel').forEach((b) => b.addEventListener('click', () => this.updateScheduleStatus(b.dataset.id, 'Cancelled')));
+    document.querySelectorAll('.schedule-duplicate').forEach((b) => b.addEventListener('click', () => this.duplicateSchedule(b.dataset.id)));
+    document.querySelectorAll('.schedule-copy').forEach((b) => b.addEventListener('click', () => this.copySchedule(b.dataset.id)));
+    document.querySelectorAll('.schedule-edit').forEach((b) => b.addEventListener('click', () => {
+      const item = HSE.state.schedules.find((s) => s.id === b.dataset.id);
+      document.querySelector('[data-bs-target="#calAdd"]').click();
+      document.getElementById('calAdd').innerHTML = this.scheduleForm(item);
+      this.bindScheduleModal();
+    }));
+  },
+  saveSchedule(data) {
+    const item = { ...data, id: data.id || `SCH-${Date.now()}`, status: data.status || 'Scheduled', manual: true, type: 'Schedule', dateObj: new Date(`${data.date}T${data.startTime || '08:00'}`) };
+    const idx = HSE.state.schedules.findIndex((s) => s.id === item.id);
+    if (idx >= 0) HSE.state.schedules[idx] = item; else HSE.state.schedules.push(item);
+    this.persistSchedules();
+    this.render();
+    HSE.ui.toast('Schedule saved', `${item.title} tersimpan.`);
+  },
+  deleteSchedule(id) {
+    if (!window.confirm('Hapus schedule ini?')) return;
+    HSE.state.schedules = HSE.state.schedules.filter((s) => s.id !== id);
+    this.persistSchedules();
+    this.render();
+    HSE.ui.toast('Schedule deleted', 'Schedule berhasil dihapus.');
+  },
+  updateScheduleStatus(id, status) { const item = HSE.state.schedules.find((s) => s.id === id); if (item) item.status = status; this.persistSchedules(); this.render(); HSE.ui.toast('Schedule updated', `Status menjadi ${status}.`); },
+  duplicateSchedule(id) {
+    const item = HSE.state.schedules.find((s) => s.id === id);
+    if (!item) return;
+    HSE.state.schedules.push({ ...item, id: `SCH-${Date.now()}`, title: `${item.title} Copy` });
+    this.persistSchedules();
+    this.render();
+    HSE.ui.toast('Schedule duplicated', 'Schedule berhasil diduplikasi.');
+  },
+  copySchedule(id) {
+    const item = HSE.state.schedules.find((s) => s.id === id);
+    if (!item) return;
+    navigator.clipboard?.writeText(JSON.stringify(item, null, 2));
+    HSE.ui.toast('Schedule copied', 'Detail schedule disalin.');
+  },
+  loadSchedules() { try { HSE.state.schedules = JSON.parse(localStorage.getItem('hseSchedules') || '[]'); } catch (_) { HSE.state.schedules = []; } },
+  persistSchedules() { localStorage.setItem('hseSchedules', JSON.stringify(HSE.state.schedules)); },
+  scheduleReminders() {
+    const today = new Date(); today.setHours(0,0,0,0);
+    const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+    return HSE.state.schedules.filter((s) => { const d = new Date(s.date); d.setHours(0,0,0,0); return d.getTime() === today.getTime() || d.getTime() === tomorrow.getTime(); });
+  },
+  reset() {
+    HSE.state.search = '';
+    document.getElementById('globalSearch').value = '';
+    HSE.data.set(this.initialModel(), HSE.workbookSeed ? 'HSE_Dashboard_Database.xlsx (Synced)' : 'No workbook loaded');
+    this.populateFilters();
+    this.render();
+    HSE.ui.toast('Dashboard reset', 'Dashboard kembali ke data workbook tersinkronisasi.');
+  },
+  resetFilters() {
+    HSE.state.search = '';
+    document.getElementById('globalSearch').value = '';
+    document.querySelectorAll('.filter-bar select').forEach((el) => el.value = 'All');
+    document.getElementById('filterDate').value = '';
+    HSE.data.applyFilters();
+    this.render();
+    HSE.ui.toast('Filter reset', 'Seluruh filter dikembalikan ke All.');
+  },
+  backupSchedules() {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(HSE.state.schedules, null, 2)], { type: 'application/json' }));
+    a.download = 'hse-schedule-backup.json';
+    a.click();
+  },
+  async restoreSchedules(file) {
+    if (!file) return;
+    try {
+      HSE.state.schedules = JSON.parse(await file.text());
+      this.persistSchedules();
+      this.render();
+      HSE.ui.toast('Schedule restored', 'Backup schedule berhasil dipulihkan.');
+    } catch (error) {
+      HSE.ui.toast('Restore gagal', 'File backup schedule tidak valid.');
+    }
+  },
+  clearCache() {
+    localStorage.removeItem('hseSchedules');
+    HSE.state.schedules = [];
+    this.render();
+    HSE.ui.toast('Cache cleared', 'Cache schedule lokal dibersihkan.');
+  },
+  tickClock() {
+    const now = new Date();
+    document.getElementById('digitalClock').textContent = now.toLocaleTimeString('id-ID');
+    document.getElementById('todayDate').textContent = now.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  },
+  drawSparks() {
+    const base = HSE.helpers.byMonth(HSE.state.filtered.audit);
+    document.querySelectorAll('.sparkline').forEach((canvas, i) => {
+      new Chart(canvas, {
+        type: 'line',
+        data: { labels: HSE.config.months, datasets: [{ data: base.map((v, idx) => Math.max(0, v + ((i + idx) % 5) - 2)), borderColor: '#2563eb', borderWidth: 1.5, pointRadius: 0, tension: .35 }] },
+        options: { responsive: false, plugins: { legend: { display: false }, tooltip: { enabled: false } }, scales: { x: { display: false }, y: { display: false } } },
+      });
+    });
+  },
+};
+document.addEventListener('DOMContentLoaded', () => HSE.app.init());
