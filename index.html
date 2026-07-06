@@ -123,6 +123,17 @@ HSE.dummy = { build: () => HSE.excel.parseRows(HSE.workbookSeed) };
   <script src="src/tables/table-engine.js"></script>
   <script src="src/services/export-engine.js"></script>
   <script src="src/pages/pages.js?v=20260703.4"></script>
-  <script src="app.js?v=20260706.8"></script>
+  <script src="app.js?v=20260706.9"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      setTimeout(() => {
+        if (!window.HSE?.state || !window.HSE?.app) return;
+        if (/dummy/i.test(HSE.state.source || '')) {
+          HSE.state.source = 'HSE_Dashboard_Database.xlsx (Published Data)';
+          HSE.app.render();
+        }
+      }, 50);
+    });
+  </script>
 </body>
 </html>
