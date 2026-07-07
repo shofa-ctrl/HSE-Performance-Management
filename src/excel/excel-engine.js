@@ -10,7 +10,7 @@ HSE.excel = {
     water: ['water consumption', 'water'], electricity: ['electricity consumption', 'electricity'], wastewater: ['air limbah', 'wastewater'], weight: ['berat', 'weight'], value: ['nilai', 'value'], score: ['score', 'nilai'],
     aparNumber: ['apar number', 'nomor apar'], location: ['location', 'lokasi'], pressure: ['pressure', 'tekanan'], condition: ['condition', 'kondisi'], expireDate: ['expired date', 'expire date'], inspector: ['inspector', 'pemeriksa'], remark: ['remark', 'keterangan'],
     manhours: ['manhours', 'man hours', 'jam kerja'], ltifr: ['ltifr'], ltisr: ['ltisr'], fafr: ['fafr'], lti: ['lti', 'lost time injury'], lostDays: ['lost days', 'hari hilang'], fac: ['fac', 'first aid'],
-    ringkas: ['ringkas'], rapi: ['rapi'], resik: ['resik'], rawat: ['rawat'], rajin: ['rajin'], totalScore: ['total score'], averageScore: ['average score', 'avg score'],
+    ringkas: ['ringkas'], rapi: ['rapi'], resik: ['resik'], rawat: ['rawat'], rajin: ['rajin'], totalScore: ['total score'], averageScore: ['average score', 'avg score', 'score 5r', 'nilai 5r'],
     totalItem: ['total item diperiksa', 'total item', 'item diperiksa'], itemOk: ['item sesuai', 'sesuai'], itemNotOk: ['item tidak sesuai', 'tidak sesuai'], apdCompliance: ['apd compliance', 'compliance apd'],
   },
   async load(file) {
