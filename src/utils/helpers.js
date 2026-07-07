@@ -52,6 +52,22 @@ HSE.helpers = {
     });
     return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
   },
+  groupAvg(rows, field, limit = 10, valueFn = (row) => row) {
+    const map = new Map();
+    rows.forEach((row) => {
+      const key = row[field] || 'Tidak Ada Data';
+      const value = Number(valueFn(row));
+      if (!Number.isFinite(value)) return;
+      const current = map.get(key) || { total: 0, count: 0 };
+      current.total += value;
+      current.count += 1;
+      map.set(key, current);
+    });
+    return [...map.entries()]
+      .map(([key, value]) => [key, value.count ? value.total / value.count : 0])
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit);
+  },
   daysBetween(a, b) { return a && b ? Math.max(0, Math.round((b - a) / 86400000)) : 0; },
   aging(due, closed) { return due && !closed ? Math.max(0, Math.ceil((new Date() - due) / 86400000)) : 0; },
   daysToDue(due) { return due ? Math.ceil((due - new Date()) / 86400000) : -9999; },
