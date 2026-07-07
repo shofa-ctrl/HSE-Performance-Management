@@ -142,6 +142,12 @@ HSE.pages = {
       HSE.charts.doughnut('analyticsChart24', ['Highest', 'Lowest'], [Math.max(0, ...apdDept.map(([, v]) => v)), Math.min(100, ...apdDept.map(([, v]) => v))]);
       return;
     }
+    if (this.drawOperationalModule(page, rows)) {
+      const tableKey = page === 'finding' ? 'audit' : page;
+      if (HSE.tables.columns[tableKey] && document.getElementById(`${page}Table`)) HSE.tables.render(`${page}Table`, rows, HSE.tables.columns[tableKey]);
+      if (page === 'project') this.bindProjectCards();
+      return;
+    }
     document.querySelectorAll('canvas.chart').forEach((canvas, i) => {
       const id = canvas.id;
       if (/Pareto/i.test(canvas.closest('.card').innerText)) HSE.charts.pareto(id, h.group(rows, page === 'safety' ? 'rootCause' : 'finding'));
@@ -151,6 +157,92 @@ HSE.pages = {
     const tableKey = page === 'finding' ? 'audit' : page;
     if (HSE.tables.columns[tableKey] && document.getElementById(`${page}Table`)) HSE.tables.render(`${page}Table`, rows, HSE.tables.columns[tableKey]);
     if (page === 'project') this.bindProjectCards();
+  },
+  drawOperationalModule(page, rows) {
+    const h = HSE.helpers, months = HSE.config.months;
+    const grouped = (field, limit = 10, valueFn = () => 1) => h.group(rows, field, limit, valueFn);
+    const barGroup = (id, field, label, color = '#2563eb', limit = 10) => { const values = grouped(field, limit); HSE.charts.bar(id, values.map(([x]) => x), values.map(([, v]) => v), label, color, true); };
+    const donutGroup = (id, field) => { const values = grouped(field, 12); HSE.charts.doughnut(id, values.map(([x]) => x), values.map(([, v]) => v)); };
+    const monthly = (items = rows, valueFn = () => 1) => h.byMonth(items, valueFn);
+    if (page === 'safety') {
+      HSE.charts.line('safetyChart0', months, monthly(), 'Incident');
+      HSE.charts.bar('safetyChart1', months, monthly(), 'Incident', '#2563eb');
+      barGroup('safetyChart2', 'department', 'Department');
+      barGroup('safetyChart3', 'area', 'Area', '#0891b2');
+      donutGroup('safetyChart4', 'severity');
+      donutGroup('safetyChart5', 'incidentType');
+      donutGroup('safetyChart6', 'shift');
+      const unsafeAct = rows.filter((r) => /unsafe act/i.test(r.findingType));
+      const unsafeCondition = rows.filter((r) => /unsafe condition/i.test(r.findingType));
+      const nearMiss = rows.filter((r) => /near miss/i.test(r.incidentType));
+      HSE.charts.line('safetyChart7', months, monthly(unsafeAct), 'Unsafe Act', '#d97706');
+      HSE.charts.line('safetyChart8', months, monthly(unsafeCondition), 'Unsafe Condition', '#dc2626');
+      HSE.charts.line('safetyChart9', months, monthly(nearMiss), 'Near Miss', '#7c3aed');
+      const topAct = h.group(unsafeAct, 'description'); HSE.charts.bar('safetyChart10', topAct.map(([x]) => x), topAct.map(([, v]) => v), 'Unsafe Act', '#d97706', true);
+      const topCondition = h.group(unsafeCondition, 'description'); HSE.charts.bar('safetyChart11', topCondition.map(([x]) => x), topCondition.map(([, v]) => v), 'Unsafe Condition', '#dc2626', true);
+      barGroup('safetyChart12', 'area', 'Area');
+      barGroup('safetyChart13', 'department', 'Department', '#16a34a');
+      HSE.charts.pareto('safetyChart14', h.group(rows, 'rootCause'));
+      return true;
+    }
+    if (page === 'finding') {
+      HSE.charts.line('findingChart0', months, monthly(), 'Finding');
+      donutGroup('findingChart1', 'risk');
+      donutGroup('findingChart2', 'findingType');
+      barGroup('findingChart3', 'department', 'Department');
+      barGroup('findingChart4', 'area', 'Area', '#0891b2');
+      HSE.charts.pareto('findingChart5', h.group(rows, 'rootCause'));
+      HSE.charts.bar('findingChart6', months, monthly(), 'Finding', '#7c3aed');
+      return true;
+    }
+    if (page === 'capa') {
+      HSE.charts.line('capaChart0', months, monthly(), 'CAPA');
+      const aging = [['0-7 Hari', rows.filter((r) => h.aging(r.dueDate, r.closingDate) <= 7).length], ['8-14 Hari', rows.filter((r) => h.aging(r.dueDate, r.closingDate) > 7 && h.aging(r.dueDate, r.closingDate) <= 14).length], ['15-30 Hari', rows.filter((r) => h.aging(r.dueDate, r.closingDate) > 14 && h.aging(r.dueDate, r.closingDate) <= 30).length], ['>30 Hari', rows.filter((r) => h.aging(r.dueDate, r.closingDate) > 30).length]];
+      HSE.charts.bar('capaChart1', aging.map(([x]) => x), aging.map(([, v]) => v), 'Aging', '#d97706');
+      barGroup('capaChart2', 'department', 'Department');
+      barGroup('capaChart3', 'area', 'Area', '#0891b2');
+      barGroup('capaChart4', 'pic', 'PIC', '#7c3aed');
+      donutGroup('capaChart5', 'status');
+      donutGroup('capaChart6', 'risk');
+      HSE.charts.line('capaChart7', months, months.map((_, i) => { const set = rows.filter((r) => r.date?.getMonth() === i); return h.pct(set.filter((r) => r.status === 'Closed').length, set.length); }), 'Completion %', '#16a34a');
+      return true;
+    }
+    if (page === 'environment') {
+      const b3 = rows.filter((r) => r.category === 'Limbah B3'), nonB3 = rows.filter((r) => r.category === 'Limbah Non B3'), liquid = rows.filter((r) => r.category === 'Limbah Cair');
+      HSE.charts.line('environmentChart0', months, monthly(b3, (r) => r.weight), 'Limbah B3', '#dc2626');
+      HSE.charts.line('environmentChart1', months, monthly(nonB3, (r) => r.weight), 'Limbah Non B3', '#16a34a');
+      HSE.charts.line('environmentChart2', months, monthly(liquid, (r) => Number(r.wastewater || r.value || r.weight) || 0), 'Limbah Cair', '#2563eb');
+      const totals = [['B3', h.sum(b3, 'weight')], ['Non B3', h.sum(nonB3, 'weight')], ['Limbah Cair', liquid.reduce((a, r) => a + (Number(r.wastewater || r.value || r.weight) || 0), 0)]];
+      HSE.charts.doughnut('environmentChart3', totals.map(([x]) => x), totals.map(([, v]) => v));
+      const waste = h.group([...b3, ...nonB3], 'wasteType', 10, (r) => r.weight); HSE.charts.bar('environmentChart4', waste.map(([x]) => x), waste.map(([, v]) => v), 'Berat', '#64748b', true);
+      const drawWaste = (id, set, color, valueFn = (r) => r.weight) => { const values = h.group(set, 'wasteType', 10, valueFn); HSE.charts.bar(id, values.map(([x]) => x), values.map(([, v]) => v), 'Total', color, true); };
+      drawWaste('environmentChart5', b3, '#dc2626'); drawWaste('environmentChart6', nonB3, '#16a34a'); drawWaste('environmentChart7', liquid, '#2563eb', (r) => Number(r.wastewater || r.value || r.weight) || 0);
+      HSE.charts.bar('environmentChart8', months, months.map((_, i) => h.unique(rows.filter((r) => r.date?.getMonth() === i).map((r) => r.manifest)).length), 'Manifest', '#7c3aed');
+      HSE.charts.line('environmentChart9', months, monthly(rows, (r) => r.water), 'Water');
+      HSE.charts.line('environmentChart10', months, monthly(rows, (r) => r.electricity), 'Electricity');
+      HSE.charts.line('environmentChart11', months, monthly(rows, (r) => r.wastewater), 'Air Limbah');
+      ['ph', 'cod', 'bod', 'score'].forEach((field, index) => HSE.charts.line(`environmentChart${12 + index}`, months, months.map((_, i) => Number(h.avg(rows.filter((r) => r.date?.getMonth() === i && Number(r[field]) > 0).map((r) => Number(r[field]))).toFixed(2))), field.toUpperCase()));
+      return true;
+    }
+    if (page === 'project') {
+      HSE.charts.line('projectChart0', months, monthly(), 'Project');
+      HSE.charts.bar('projectChart1', rows.map((r) => r.name), rows.map((r) => r.progress), 'Timeline Progress', '#2563eb', true);
+      donutGroup('projectChart2', 'status');
+      barGroup('projectChart3', 'department', 'Project', '#7c3aed');
+      HSE.charts.gauge('projectChart4', h.avg(rows.map((r) => Number(r.progress) || 0)), 100);
+      return true;
+    }
+    if (page === 'permit') {
+      HSE.charts.line('permitChart0', months, monthly(), 'Permit');
+      const permitCounts = HSE.config.permitTypes.map((type) => [type, rows.filter((r) => (r.permitTypes || [r.permitType]).includes(type)).length]).filter(([, value]) => value > 0);
+      HSE.charts.doughnut('permitChart1', permitCounts.map(([x]) => x), permitCounts.map(([, v]) => v));
+      barGroup('permitChart2', 'department', 'Department');
+      donutGroup('permitChart3', 'status');
+      HSE.charts.bar('permitChart4', months, months.map((_, i) => rows.filter((r) => r.date?.getMonth() === i && r.status === 'Expired').length), 'Expired', '#dc2626');
+      barGroup('permitChart5', 'area', 'Area', '#0891b2');
+      return true;
+    }
+    return false;
   },
   drawFiveRAndApd() {
     const d = HSE.state.filtered, h = HSE.helpers;
@@ -308,7 +400,7 @@ HSE.pages = {
     if (/High|Medium|Low/.test(label)) return findings.filter((r) => label.includes(r.risk)).length;
     if (/Total Project/.test(label)) return d.project.length;
     if (/Total Permit/.test(label)) return d.permit.length;
-    if (HSE.config.permitTypes.includes(label)) return d.permit.filter((r) => r.permitType === label).length;
+    if (HSE.config.permitTypes.includes(label)) return d.permit.filter((r) => (r.permitTypes || [r.permitType]).includes(label)).length;
     if (key === 'fiveR') {
       const scores = d.fiveR.map((r) => Number(r.averageScore) || 0).filter(Boolean);
       const dept = h.groupAvg(d.fiveR, 'department', 50, (r) => Number(r.averageScore) || 0);
