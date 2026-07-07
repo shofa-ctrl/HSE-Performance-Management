@@ -23,7 +23,7 @@ HSE.data = {
         && (!f.priority || f.priority === 'All' || r.priority === f.priority)
         && (!f.auditType || f.auditType === 'All' || r.auditType === f.auditType)
         && (!f.incidentType || f.incidentType === 'All' || r.incidentType === f.incidentType)
-        && (!f.permitType || f.permitType === 'All' || r.permitType === f.permitType)
+        && (!f.permitType || f.permitType === 'All' || (r.permitTypes || [r.permitType]).includes(f.permitType))
         && (!f.wasteCategory || f.wasteCategory === 'All' || r.category === f.wasteCategory)
         && (!f.project || f.project === 'All' || r.name === f.project || r.id === f.project)
         && (!f.vendor || f.vendor === 'All' || r.vendor === f.vendor || r.contractor === f.vendor);
@@ -39,7 +39,7 @@ HSE.data = {
     const completion = h.pct(d.capa.filter((r) => r.status === 'Closed').length, d.capa.length);
     const scoredAudits = findings.map((r) => r.score).filter(Boolean);
     const auditScore = Math.round(scoredAudits.length ? h.avg(scoredAudits) : h.pct(findings.filter((r) => r.status === 'Closed').length, findings.length));
-    const fiveRScore = Math.round(h.avg(findings.filter((r) => /5R|5S/i.test(r.auditType || r.category)).map((r) => r.score).filter(Boolean)));
+    const fiveRScore = h.avg((d.fiveR || []).map((r) => Number(r.averageScore) || 0).filter(Boolean));
     const envScore = Math.round(h.avg(d.environment.map((r) => r.score).filter(Boolean)));
     const incidentPenalty = Math.min(45, d.safety.length * 1.8);
     const findingClosed = h.pct(findings.filter((r) => r.status === 'Closed').length, findings.length);
